@@ -1,7 +1,7 @@
-import { eq, asc } from 'drizzle-orm';
+import { eq, asc, inArray, and } from 'drizzle-orm';
 import type { Database } from './db';
 import { games, categories, publishers } from '../../db/schema';
-import type { Game } from '../types/game';
+import type { Category, Game, Publisher } from '../types/game';
 
 const gameSelection = {
     id: games.id,
@@ -24,6 +24,11 @@ type GameSelectionRow = {
     publisherId: number | null;
     publisherName: string | null;
 };
+
+export interface GameFilters {
+    categoryIds?: number[];
+    publisherIds?: number[];
+}
 
 function mapGame(row: GameSelectionRow): Game {
     return {
@@ -50,10 +55,65 @@ function baseGamesQuery(db: Database) {
         .leftJoin(publishers, eq(games.publisherId, publishers.id));
 }
 
+function normalizeFilterIds(ids?: number[]): number[] | undefined {
+    if (!ids || ids.length === 0) {
+        return undefined;
+    }
+
+    const uniqueIds = [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))];
+    return uniqueIds.length > 0 ? uniqueIds : undefined;
+}
+
+type FilterableGamesQuery = ReturnType<typeof baseGamesQuery> & {
+    where: (condition: Parameters<typeof and>[0]) => ReturnType<typeof baseGamesQuery>;
+    orderBy: (...args: unknown[]) => ReturnType<typeof baseGamesQuery>;
+};
+
+function applyFilters(query: ReturnType<typeof baseGamesQuery>, filters?: GameFilters): ReturnType<typeof baseGamesQuery> {
+    let filteredQuery = query as FilterableGamesQuery;
+    const categoryIds = normalizeFilterIds(filters?.categoryIds);
+    const publisherIds = normalizeFilterIds(filters?.publisherIds);
+    const conditions = [] as unknown as Parameters<typeof and>;
+
+    if (categoryIds) {
+        conditions.push(inArray(games.categoryId, categoryIds));
+    }
+
+    if (publisherIds) {
+        conditions.push(inArray(games.publisherId, publisherIds));
+    }
+
+    if (conditions.length > 0) {
+        filteredQuery = filteredQuery.where(and(...conditions)) as unknown as FilterableGamesQuery;
+    }
+
+    return filteredQuery as ReturnType<typeof baseGamesQuery>;
+}
+
 /** All games ordered by title. */
-export async function getAllGames(db: Database): Promise<Game[]> {
-    const rows = await baseGamesQuery(db).orderBy(asc(games.title));
+export async function getAllGames(db: Database, filters?: GameFilters): Promise<Game[]> {
+    const rows = await applyFilters(baseGamesQuery(db), filters).orderBy(asc(games.title));
     return rows.map(mapGame);
+}
+
+/** All available categories ordered by name. */
+export async function getAllCategories(db: Database): Promise<Category[]> {
+    const rows = await db
+        .select({ id: categories.id, name: categories.name })
+        .from(categories)
+        .orderBy(asc(categories.name));
+
+    return rows.map((row) => ({ id: row.id, name: row.name }));
+}
+
+/** All available publishers ordered by name. */
+export async function getAllPublishers(db: Database): Promise<Publisher[]> {
+    const rows = await db
+        .select({ id: publishers.id, name: publishers.name })
+        .from(publishers)
+        .orderBy(asc(publishers.name));
+
+    return rows.map((row) => ({ id: row.id, name: row.name }));
 }
 
 /** All game ids ordered by title. */
